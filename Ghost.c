@@ -18,6 +18,19 @@
 // Switch
 #define PUSH_PIN 25
 
+// State
+enum State
+{
+    start = 0,
+    pic_1 = 1,
+    pic_2 = 2,
+    pic_3 = 3,
+    pic_4 = 4,
+    pic_5 = 5,
+    calc = 6,
+    result = 7
+};
+
 // SPI
 int SPISetup();
 int AnalogRead(int spiChannel, int channelConfig, int analogChannel);
@@ -26,11 +39,15 @@ int AnalogRead(int spiChannel, int channelConfig, int analogChannel);
 int LCDSetup();
 
 // Switch
-void SwtichSetup();
+void SwitchSetup();
+
+// State
+void ProcessState(enum State state);
 
 int main()
 {
     // Declare
+    enum State state = start;
     int myFd = 0;
     int lcd = 0;
 
@@ -40,9 +57,15 @@ int main()
     lcd = LCDSetup();
     SwitchSetup();
 
-    
+    // loop
+    while (true)
+    {
+       ProcessState(state);
+    }
 
     close(myFd);
+
+    return 0;
 }
 
 int SPISetup()
@@ -76,4 +99,43 @@ void SwitchSetup()
 {
     pinMode(PUSH_PIN, INPUT);
     pullUpDnControl(PUSH_PIN, PUD_UP);
+}
+
+void ProcessState(enum State state)
+{
+    switch (state)
+    {
+    case start:
+    {
+        break;
+    }
+    case pic_1:
+    {
+        break;
+    }
+    case pic_2:
+    {
+        break;
+    }
+    case pic_3:
+    {
+        break;
+    }
+    case pic_4:
+    {
+        break;
+    }
+    case pic_5:
+    {
+        break;
+    }
+    case calc:
+    {
+        break;
+    }
+    case result:
+    {
+        break;
+    }
+    }
 }
