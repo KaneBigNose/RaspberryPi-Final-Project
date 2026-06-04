@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <wiringPi.h>
 #include <wiringPiSPI.h>
 #include <lcd.h>
@@ -22,11 +23,11 @@
 enum State
 {
     start = 0,
-    pic_1 = 1,
-    pic_2 = 2,
-    pic_3 = 3,
-    pic_4 = 4,
-    pic_5 = 5,
+    video_1 = 1,
+    video_2 = 2,
+    video_3 = 3,
+    video_4 = 4,
+    video_5 = 5,
     calc = 6,
     result = 7
 };
@@ -40,9 +41,10 @@ int LCDSetup();
 
 // Switch
 void SwitchSetup();
+void WaitSwitchPush();
 
 // State
-void ProcessState(enum State state);
+bool ProcessState(enum State &state);
 
 int main()
 {
@@ -60,7 +62,10 @@ int main()
     // loop
     while (true)
     {
-       ProcessState(state);
+        if (ProcessState(state))
+        {
+            break;
+        }
     }
 
     close(myFd);
@@ -101,32 +106,93 @@ void SwitchSetup()
     pullUpDnControl(PUSH_PIN, PUD_UP);
 }
 
-void ProcessState(enum State state)
+void WaitSwitchPush()
 {
+    while (digitalRead(PUSH_PIN) == HIGH)
+    {
+        delay(10);
+    }
+}
+
+bool ProcessState(enum State &state)
+{
+    // 상태 패턴을 활용
     switch (state)
     {
     case start:
     {
+        char* stateString = "Start";
+        printf("State: %s", stateString);
+
+        WaitSwitchPush();
+
+        ++state;
+
         break;
     }
-    case pic_1:
+    case video_1:
     {
+        char* stateString = "Level 1";
+        printf("State: %s", stateString);
+
+        system("mpv Video/video1.mp4");
+
+        WaitSwitchPush();
+
+        ++state;
+
         break;
     }
-    case pic_2:
+    case video_2:
     {
+        char* stateString = "Level 2";
+        printf("State: %s", stateString);
+
+        system("mpv Video/video2.mp4");
+
+        WaitSwitchPush();
+
+        ++state;
+
         break;
     }
-    case pic_3:
+    case video_3:
     {
+        char* stateString = "Level 3";
+        printf("State: %s", stateString);
+
+        system("mpv Video/video3.mp4");
+
+        WaitSwitchPush();
+
+        ++state;
+
         break;
     }
-    case pic_4:
+    case video_4:
     {
+        char* stateString = "Level 4";
+        printf("State: %s", stateString);
+
+        system("mpv Video/video4.mp4");
+
+        WaitSwitchPush();
+
+        ++state;
+
         break;
     }
-    case pic_5:
+    case video_5:
     {
+        char* stateString = "Level 5";
+        printf("State: %s", stateString);
+
+        system("mpv Video/video5.mp4");
+
+        WaitSwitchPush();
+
+        ++state;
+
         break;
     }
     case calc:
@@ -135,7 +201,9 @@ void ProcessState(enum State state)
     }
     case result:
     {
-        break;
+        return true;
     }
     }
+
+    return false;
 }
