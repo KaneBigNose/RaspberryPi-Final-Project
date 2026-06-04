@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wiringPi.h>
 #include <wiringPiSPI.h>
 #include <lcd.h>
@@ -7,6 +8,8 @@
 // SPI
 #define SPI_CHANNEL 0
 #define SPI_SPEED 1000000
+#define CHAN_CONFIG_SINGLE 8
+#define HEARTBEAT_CHANNEL 0
 
 // LCD
 #define LCD_RS 11
@@ -43,8 +46,11 @@ int LCDSetup();
 void SwitchSetup();
 void WaitSwitchPush();
 
+// HeartBeat
+void PrintHeartBeat(int lcd);
+
 // State
-bool ProcessState(enum State &state);
+bool ProcessState(enum State* state, int lcd);
 
 int main()
 {
@@ -62,7 +68,7 @@ int main()
     // loop
     while (true)
     {
-        if (ProcessState(state))
+        if (ProcessState(&state, lcd))
         {
             break;
         }
@@ -75,7 +81,7 @@ int main()
 
 int SPISetup()
 {
-    return wiringPiSPISetup(SPI_CHANNEL, SPI_SPEED);
+    return wiringPiSPISetup(SPI_CHANNEL, SPI_SPEED, );
 }
 
 int AnalogRead(int spiChannel, int channelConfig, int analogChannel)
@@ -114,84 +120,58 @@ void WaitSwitchPush()
     }
 }
 
-bool ProcessState(enum State &state)
+void PrintHeartBeat(int lcd)
+{
+    int wait = 0;
+    while (++wait <= 100)
+    {
+        int value = AnalogRead(SPI_CHANNEL, CHAN_CONFIG_SINGLE, HEARTBEAT_CHANNEL);
+
+        lcdClear(lcd);
+        lcdPosition(lcd, 0, 0);
+        lcdPrintf(lcd, "BPM: %d", value);
+
+        delay(100);
+    }
+}
+
+bool ProcessState(enum State* state, int lcd)
 {
     // 상태 패턴을 활용
     switch (state)
     {
     case start:
     {
-        char* stateString = "Start";
-        printf("State: %s", stateString);
+        printf("BPM Test Start!");
 
         WaitSwitchPush();
 
-        ++state;
+        ++(*state);
 
         break;
     }
     case video_1:
-    {
-        char* stateString = "Level 1";
-        printf("State: %s", stateString);
-
-        system("mpv Video/video1.mp4");
-
-        WaitSwitchPush();
-
-        ++state;
-
-        break;
-    }
     case video_2:
-    {
-        char* stateString = "Level 2";
-        printf("State: %s", stateString);
-
-        system("mpv Video/video2.mp4");
-
-        WaitSwitchPush();
-
-        ++state;
-
-        break;
-    }
     case video_3:
-    {
-        char* stateString = "Level 3";
-        printf("State: %s", stateString);
-
-        system("mpv Video/video3.mp4");
-
-        WaitSwitchPush();
-
-        ++state;
-
-        break;
-    }
     case video_4:
-    {
-        char* stateString = "Level 4";
-        printf("State: %s", stateString);
-
-        system("mpv Video/video4.mp4");
-
-        WaitSwitchPush();
-
-        ++state;
-
-        break;
-    }
     case video_5:
     {
-        char* stateString = "Level 5";
-        printf("State: %s", stateString);
+        char cmd[100] = "mpv ";
+        char path[] = "Video/video";
+        char num = (int)(*state) + '0';
+        char file[] = ".mp4 &";
 
-        system("mpv Video/video5.mp4");
+        strcat(cmd, path);
+        strcat(cmd, num);
+        strcat(cmd, file);
+
+        system(cmd);
+
+        PrintHeartBeat(lcd);
 
         WaitSwitchPush();
 
-        ++state;
+        ++(*state);
 
         break;
     }
