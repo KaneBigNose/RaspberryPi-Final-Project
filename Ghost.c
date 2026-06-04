@@ -87,11 +87,13 @@ int main()
 
 int SPISetup()
 {
+    // SPI 세팅
     return wiringPiSPISetup(SPI_CHANNEL, SPI_SPEED);
 }
 
 int AnalogRead(int spiChannel, int channelConfig, int analogChannel)
 {
+    // 아날로그 값을 읽어주는 함수
     // MCP 3004 모듈은 0 ~ 3번 채널만 있음
     if (analogChannel < 0 || analogChannel > 3)
     {
@@ -109,17 +111,20 @@ int AnalogRead(int spiChannel, int channelConfig, int analogChannel)
 
 int LCDSetup()
 {
+    // LCD 세팅
     return lcdInit(2, 16, 4, LCD_RS, LCD_E, LCD_D4, LCD_D5, LCD_D6, LCD_D7, 0, 0, 0, 0);
 }
 
 void SwitchSetup()
 {
+    // 스위치 세팅
     pinMode(PUSH_PIN, INPUT);
     pullUpDnControl(PUSH_PIN, PUD_UP);
 }
 
 void WaitSwitchPush()
 {
+    // 스위치 누르기 대기
     while (digitalRead(PUSH_PIN) == HIGH)
     {
         delay(10);
@@ -135,6 +140,7 @@ void WaitSwitchPush()
 
 int GetBPM()
 {
+    // 아날로그 값을 BPM으로 변환시키는 함수
     static int PrevAboveThreshold = 0;
     static unsigned int LastBeatTime = 0;
 
@@ -165,6 +171,7 @@ int GetBPM()
 
 void PrintHeartBeat(int lcd)
 {
+    // LCD에 BPM을 출력
     int BPM = 0;
     int wait = 0;
 
