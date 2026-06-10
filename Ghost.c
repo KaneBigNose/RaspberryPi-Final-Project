@@ -3,6 +3,9 @@
 #include <string.h>
 #include <time.h>
 #include <stdbool.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <wiringPi.h>
 #include <wiringPiSPI.h>
 #include <lcd.h>
@@ -13,8 +16,8 @@
 #define CHAN_CONFIG_SINGLE 8
 
 // LCD
-#define LCD_RS 11
-#define LCD_E 10
+#define LCD_RS 0
+#define LCD_E 2
 #define LCD_D4 6
 #define LCD_D5 5
 #define LCD_D6 4
@@ -26,6 +29,11 @@
 // HeartBeat
 #define HEARTBEAT_CHANNEL 0
 #define THRESHOLD 650
+#define BPM_MIN 40
+#define BPM_MAX 200
+
+// Video
+#define VIDEO_COUNT 3
 
 // State
 enum State
@@ -34,10 +42,8 @@ enum State
     STATE_VIDEO_1 = 1,
     STATE_VIDEO_2 = 2,
     STATE_VIDEO_3 = 3,
-    STATE_VIDEO_4 = 4,
-    STATE_VIDEO_5 = 5,
-    STATE_CALC = 6,
-    STATE_RESULT = 7
+    STATE_CALC = 4,
+    STATE_RESULT = 5
 };
 
 // SPI
@@ -53,25 +59,28 @@ void WaitSwitchPush();
 
 // HeartBeat
 int GetBPM();
-void PrintHeartBeat(int lcd);
+void ResetBPM();
+int MeasureHeartBeatWhileVideo(int lcd, const char *videoPath);
 
 // State
 bool ProcessState(enum State *state, int lcd);
 
+int videoAvgBPM[VIDEO_COUNT] = {0};
+int totalAvgBPM = 0;
+int prevAboveThreshold = 0;
+unsigned int lastBeatTime = 0;
+
 int main()
 {
-    // Declare
     enum State state = STATE_WAIT;
     int myFd = 0;
     int lcd = 0;
 
-    // Setup
     wiringPiSetup();
     myFd = SPISetup();
     lcd = LCDSetup();
     SwitchSetup();
 
-    // loop
     while (true)
     {
         if (ProcessState(&state, lcd))
@@ -87,17 +96,14 @@ int main()
 
 int SPISetup()
 {
-    // SPI 세팅
     return wiringPiSPISetup(SPI_CHANNEL, SPI_SPEED);
 }
 
 int AnalogRead(int spiChannel, int channelConfig, int analogChannel)
 {
-    // 아날로그 값을 읽어주는 함수
-    // MCP 3004 모듈은 0 ~ 3번 채널만 있음
     if (analogChannel < 0 || analogChannel > 3)
     {
-        printf("InValid: Analog Channel");
+        printf("InValid: Analog Channel\n");
         return -1;
     }
 
@@ -111,20 +117,17 @@ int AnalogRead(int spiChannel, int channelConfig, int analogChannel)
 
 int LCDSetup()
 {
-    // LCD 세팅
     return lcdInit(2, 16, 4, LCD_RS, LCD_E, LCD_D4, LCD_D5, LCD_D6, LCD_D7, 0, 0, 0, 0);
 }
 
 void SwitchSetup()
 {
-    // 스위치 세팅
     pinMode(PUSH_PIN, INPUT);
     pullUpDnControl(PUSH_PIN, PUD_UP);
 }
 
 void WaitSwitchPush()
 {
-    // 스위치 누르기 대기
     while (digitalRead(PUSH_PIN) == HIGH)
     {
         delay(10);
@@ -140,65 +143,101 @@ void WaitSwitchPush()
 
 int GetBPM()
 {
-    // 아날로그 값을 BPM으로 변환시키는 함수
-    static int PrevAboveThreshold = 0;
-    static unsigned int LastBeatTime = 0;
-
     int Value = AnalogRead(SPI_CHANNEL, CHAN_CONFIG_SINGLE, HEARTBEAT_CHANNEL);
-
     int CurrentAboveThreshold = (Value > THRESHOLD);
 
-    if (!PrevAboveThreshold && CurrentAboveThreshold)
+    if (!prevAboveThreshold && CurrentAboveThreshold)
     {
         unsigned int CurrentTime = millis();
 
-        if (LastBeatTime != 0)
+        if (lastBeatTime != 0)
         {
-            unsigned int Interval = CurrentTime - LastBeatTime;
+            unsigned int Interval = CurrentTime - lastBeatTime;
 
-            LastBeatTime = CurrentTime;
+            lastBeatTime = CurrentTime;
+
+            if (Interval == 0)
+            {
+                return -1;
+            }
 
             return 60000 / Interval;
         }
 
-        LastBeatTime = CurrentTime;
+        lastBeatTime = CurrentTime;
     }
 
-    PrevAboveThreshold = CurrentAboveThreshold;
+    prevAboveThreshold = CurrentAboveThreshold;
 
     return -1;
 }
 
-void PrintHeartBeat(int lcd)
+void ResetBPM()
 {
-    // LCD에 BPM을 출력
-    int BPM = 0;
-    int wait = 0;
+    prevAboveThreshold = 0;
+    lastBeatTime = 0;
+}
 
-    while (++wait <= 100)
+int MeasureHeartBeatWhileVideo(int lcd, const char *videoPath)
+{
+    int sum = 0;
+    int count = 0;
+    int lastBPM = 0;
+    int status = 0;
+    pid_t pid = fork();
+
+    if (pid == 0)
+    {
+        execlp("mpv", "mpv", videoPath, (char *)NULL);
+        _exit(127);
+    }
+
+    if (pid < 0)
+    {
+        return -1;
+    }
+
+    ResetBPM();
+
+    while (waitpid(pid, &status, WNOHANG) == 0)
     {
         int value = GetBPM();
 
-        if (value > 0)
+        if (value >= BPM_MIN && value <= BPM_MAX)
         {
-            BPM = value;
+            lastBPM = value;
+            sum += value;
+            count++;
         }
 
         lcdPosition(lcd, 0, 0);
-        lcdPrintf(lcd, "BPM: %d   ", BPM);
+        lcdPrintf(lcd, "BPM: %-3d       ", lastBPM);
+        lcdPosition(lcd, 0, 1);
+        lcdPrintf(lcd, "Samples: %-3d    ", count);
 
         delay(100);
     }
+
+    if (count == 0)
+    {
+        return 0;
+    }
+
+    return sum / count;
 }
 
 bool ProcessState(enum State *state, int lcd)
 {
-    // 상태 패턴을 활용
     switch (*state)
     {
     case STATE_WAIT:
     {
-        printf("BPM Test Start!");
+        printf("BPM Test Start!\n");
+        lcdClear(lcd);
+        lcdPosition(lcd, 0, 0);
+        lcdPrintf(lcd, "BPM Test Start");
+        lcdPosition(lcd, 0, 1);
+        lcdPrintf(lcd, "Press switch");
 
         WaitSwitchPush();
 
@@ -209,15 +248,37 @@ bool ProcessState(enum State *state, int lcd)
     case STATE_VIDEO_1:
     case STATE_VIDEO_2:
     case STATE_VIDEO_3:
-    case STATE_VIDEO_4:
-    case STATE_VIDEO_5:
     {
-        char cmd[100];
-        sprintf(cmd, "mpv Video/video%d.mp4 &", *state);
+        char videoPath[100];
+        int videoIndex = *state - STATE_VIDEO_1;
+        int avgBPM = 0;
 
-        system(cmd);
+        sprintf(videoPath, "Video/video%d.mp4", *state);
 
-        PrintHeartBeat(lcd);
+        lcdClear(lcd);
+
+        avgBPM = MeasureHeartBeatWhileVideo(lcd, videoPath);
+
+        if (avgBPM < 0)
+        {
+            lcdClear(lcd);
+            lcdPosition(lcd, 0, 0);
+            lcdPrintf(lcd, "Video error");
+            lcdPosition(lcd, 0, 1);
+            lcdPrintf(lcd, "Press switch");
+
+            WaitSwitchPush();
+
+            return true;
+        }
+
+        videoAvgBPM[videoIndex] = avgBPM;
+
+        lcdClear(lcd);
+        lcdPosition(lcd, 0, 0);
+        lcdPrintf(lcd, "Video %d done", videoIndex + 1);
+        lcdPosition(lcd, 0, 1);
+        lcdPrintf(lcd, "Press switch");
 
         WaitSwitchPush();
 
@@ -227,10 +288,43 @@ bool ProcessState(enum State *state, int lcd)
     }
     case STATE_CALC:
     {
+        int sum = 0;
+        int count = 0;
+
+        for (int i = 0; i < VIDEO_COUNT; i++)
+        {
+            if (videoAvgBPM[i] > 0)
+            {
+                sum += videoAvgBPM[i];
+                count++;
+            }
+        }
+
+        if (count > 0)
+        {
+            totalAvgBPM = sum / count;
+        }
+        else
+        {
+            totalAvgBPM = 0;
+        }
+
+        ++(*state);
+
         break;
     }
     case STATE_RESULT:
     {
+        printf("Total AVG BPM: %d\n", totalAvgBPM);
+
+        lcdClear(lcd);
+        lcdPosition(lcd, 0, 0);
+        lcdPrintf(lcd, "Total AVG BPM");
+        lcdPosition(lcd, 0, 1);
+        lcdPrintf(lcd, "%d", totalAvgBPM);
+
+        WaitSwitchPush();
+
         return true;
     }
     }
