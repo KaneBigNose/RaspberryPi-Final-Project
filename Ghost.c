@@ -3,6 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include <stdbool.h>
+#include <errno.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -28,9 +29,13 @@
 
 // 심박 센서와 BPM 계산에 사용하는 설정입니다.
 #define HEARTBEAT_CHANNEL 0
-#define THRESHOLD 650
+#define HEARTBEAT_DELTA 30
 #define BPM_MIN 40
 #define BPM_MAX 200
+#define MIN_BEAT_INTERVAL_MS 400
+#define MAX_BEAT_INTERVAL_MS 1500
+#define HEARTBEAT_SAMPLE_DELAY_MS 50
+#define BPM_WARMUP_TIMEOUT_MS 5000
 
 // 재생할 영상 개수입니다.
 #define VIDEO_COUNT 3
@@ -75,11 +80,17 @@ void WaitSwitchPush();
 // 심박 센서 신호를 이용해 BPM을 계산합니다.
 int GetBPM();
 
+// MCP3004에서 현재 심박 센서 ADC 값을 읽습니다.
+int GetHeartBeatRawValue();
+
+// 영상 시작 전 표시할 초기 BPM을 미리 측정합니다.
+int WarmUpBPM(int lcd);
+
 // 이전 심박 감지 시간 정보를 초기화합니다.
 void ResetBPM();
 
 // 영상을 재생하고, 영상이 재생되는 동안 평균 BPM을 측정합니다.
-int MeasureHeartBeatWhileVideo(int lcd, const char *videoPath);
+int MeasureHeartBeatWhileVideo(int lcd, const char *videoPath, int initialBPM);
 
 // 현재 상태에 맞는 동작을 한 단계 실행합니다.
 bool ProcessState(enum State *state, int lcd);
@@ -95,6 +106,12 @@ int prevAboveThreshold = 0;
 
 // 마지막으로 감지한 심박 시간입니다.
 unsigned int lastBeatTime = 0;
+
+// KY-039 센서의 현재 기준 ADC 값입니다.
+int heartbeatBaseValue = 0;
+
+// 기준 ADC 값이 초기화되었는지 저장합니다.
+int heartbeatBaseReady = 0;
 
 int main()
 {
@@ -149,7 +166,11 @@ int AnalogRead(int spiChannel, int channelConfig, int analogChannel)
     buffer[1] = (channelConfig + analogChannel) << 4;
 
     // SPI로 명령을 보내고 변환 결과를 받습니다.
-    wiringPiSPIDataRW(spiChannel, buffer, 3);
+    if (wiringPiSPIDataRW(spiChannel, buffer, 3) == -1)
+    {
+        printf("SPI read error\n");
+        return -1;
+    }
 
     // 반환된 바이트를 10비트 아날로그 값으로 변환합니다.
     return ((buffer[1] & 3) << 8) + buffer[2];
@@ -189,10 +210,25 @@ void WaitSwitchPush()
 int GetBPM()
 {
     // KY-039의 아날로그 값을 MCP3004를 통해 읽습니다.
-    int Value = AnalogRead(SPI_CHANNEL, CHAN_CONFIG_SINGLE, HEARTBEAT_CHANNEL);
+    int Value = GetHeartBeatRawValue();
 
-    // 센서 값이 임계값을 넘는 순간을 심박 신호로 판단합니다.
-    int CurrentAboveThreshold = (Value > THRESHOLD);
+    if (Value < 0)
+    {
+        return -1;
+    }
+
+    // 첫 샘플을 기준 ADC 값으로 사용합니다.
+    if (!heartbeatBaseReady)
+    {
+        heartbeatBaseValue = Value;
+        heartbeatBaseReady = 1;
+    }
+
+    // 센서의 천천히 변하는 기준값을 따라가도록 보정합니다.
+    heartbeatBaseValue = ((heartbeatBaseValue * 9) + Value) / 10;
+
+    // 기준값보다 충분히 높게 튀는 순간을 심박 신호로 판단합니다.
+    int CurrentAboveThreshold = ((Value - heartbeatBaseValue) > HEARTBEAT_DELTA);
 
     if (!prevAboveThreshold && CurrentAboveThreshold)
     {
@@ -204,9 +240,14 @@ int GetBPM()
             // 이전 심박과 현재 심박 사이의 시간 간격입니다.
             unsigned int Interval = CurrentTime - lastBeatTime;
 
+            if (Interval < MIN_BEAT_INTERVAL_MS)
+            {
+                return -1;
+            }
+
             lastBeatTime = CurrentTime;
 
-            if (Interval == 0)
+            if (Interval > MAX_BEAT_INTERVAL_MS)
             {
                 return -1;
             }
@@ -226,24 +267,73 @@ int GetBPM()
     return -1;
 }
 
+int GetHeartBeatRawValue()
+{
+    // KY-039가 연결된 MCP3004 채널의 원시 ADC 값을 반환합니다.
+    return AnalogRead(SPI_CHANNEL, CHAN_CONFIG_SINGLE, HEARTBEAT_CHANNEL);
+}
+
+int WarmUpBPM(int lcd)
+{
+    // 영상 시작 전 손가락을 안정시키고 첫 BPM을 확보합니다.
+    int elapsed = 0;
+    int lastBPM = 0;
+
+    ResetBPM();
+
+    while (elapsed < BPM_WARMUP_TIMEOUT_MS)
+    {
+        int value = GetBPM();
+        int rawValue = GetHeartBeatRawValue();
+
+        if (value >= BPM_MIN && value <= BPM_MAX)
+        {
+            lastBPM = value;
+            break;
+        }
+
+        lcdPosition(lcd, 0, 0);
+        lcdPrintf(lcd, "Measuring BPM   ");
+        lcdPosition(lcd, 0, 1);
+        lcdPrintf(lcd, "ADC: %-4d      ", rawValue);
+
+        delay(HEARTBEAT_SAMPLE_DELAY_MS);
+        elapsed += HEARTBEAT_SAMPLE_DELAY_MS;
+    }
+
+    return lastBPM;
+}
+
 void ResetBPM()
 {
     // 새 영상 측정을 시작하기 전에 심박 감지 상태를 초기화합니다.
     prevAboveThreshold = 0;
     lastBeatTime = 0;
+    heartbeatBaseValue = 0;
+    heartbeatBaseReady = 0;
 }
 
-int MeasureHeartBeatWhileVideo(int lcd, const char *videoPath)
+int MeasureHeartBeatWhileVideo(int lcd, const char *videoPath, int initialBPM)
 {
     // sum과 count는 해당 영상의 평균 BPM을 계산하는 데 사용합니다.
     int sum = 0;
     int count = 0;
 
     // LCD에 표시할 마지막 유효 BPM 값입니다.
-    int lastBPM = 0;
+    int lastBPM = initialBPM;
 
     // mpv 자식 프로세스의 종료 상태입니다.
     int status = 0;
+
+    // waitpid의 반환값을 저장합니다.
+    pid_t waitResult = 0;
+
+    // 영상 파일을 읽을 수 있는지 먼저 확인합니다.
+    if (access(videoPath, R_OK) != 0)
+    {
+        printf("Video file open error: %s\n", videoPath);
+        return -1;
+    }
 
     // mpv 실행을 위한 자식 프로세스 ID입니다.
     pid_t pid = fork();
@@ -251,7 +341,7 @@ int MeasureHeartBeatWhileVideo(int lcd, const char *videoPath)
     if (pid == 0)
     {
         // 자식 프로세스는 자기 자신을 mpv 실행으로 교체합니다.
-        execlp("mpv", "mpv", videoPath, (char *)NULL);
+        execlp("mpv", "mpv", "--really-quiet", videoPath, (char *)NULL);
         _exit(127);
     }
 
@@ -261,13 +351,27 @@ int MeasureHeartBeatWhileVideo(int lcd, const char *videoPath)
         return -1;
     }
 
-    ResetBPM();
-
     // 영상 프로세스가 종료될 때까지 BPM을 측정합니다.
-    while (waitpid(pid, &status, WNOHANG) == 0)
+    while (true)
     {
+        waitResult = waitpid(pid, &status, WNOHANG);
+
+        if (waitResult == pid)
+        {
+            break;
+        }
+
+        if (waitResult < 0)
+        {
+            printf("Video wait error: %s\n", strerror(errno));
+            return -1;
+        }
+
         // 심박 계산 로직에서 반환한 최신 BPM 값입니다.
         int value = GetBPM();
+
+        // 센서 입력 확인을 위해 원시 ADC 값도 함께 읽습니다.
+        int rawValue = GetHeartBeatRawValue();
 
         // 센서 노이즈로 생기는 비현실적인 BPM 값은 제외합니다.
         if (value >= BPM_MIN && value <= BPM_MAX)
@@ -281,15 +385,32 @@ int MeasureHeartBeatWhileVideo(int lcd, const char *videoPath)
         lcdPosition(lcd, 0, 0);
         lcdPrintf(lcd, "BPM: %-3d       ", lastBPM);
         lcdPosition(lcd, 0, 1);
-        lcdPrintf(lcd, "Samples: %-3d    ", count);
+        lcdPrintf(lcd, "ADC: %-4d      ", rawValue);
 
-        delay(100);
+        delay(HEARTBEAT_SAMPLE_DELAY_MS);
+    }
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 127)
+    {
+        printf("mpv 실행 실패: %d\n", WEXITSTATUS(status));
+        return -1;
+    }
+
+    if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
+    {
+        printf("mpv 종료 경고: %d\n", WEXITSTATUS(status));
+    }
+
+    if (WIFSIGNALED(status))
+    {
+        printf("mpv signal error: %d\n", WTERMSIG(status));
+        return -1;
     }
 
     if (count == 0)
     {
-        // 유효한 BPM 샘플이 하나도 없으면 0을 반환합니다.
-        return 0;
+        // 영상이 너무 짧아 새 샘플이 없으면 초기 BPM을 사용합니다.
+        return initialBPM;
     }
 
     // 해당 영상에서 측정한 평균 BPM을 반환합니다.
@@ -330,12 +451,20 @@ bool ProcessState(enum State *state, int lcd)
         // 현재 영상에서 측정한 평균 BPM 임시 저장값입니다.
         int avgBPM = 0;
 
+        // 영상 시작 전에 확보한 초기 BPM 값입니다.
+        int initialBPM = 0;
+
         sprintf(videoPath, "Video/video%d.mp4", *state);
 
         lcdClear(lcd);
 
+        // 짧은 영상에서도 0만 보이지 않도록 시작 전 BPM을 먼저 잡습니다.
+        initialBPM = WarmUpBPM(lcd);
+
+        lcdClear(lcd);
+
         // 현재 영상을 재생하고, 재생 중일 때만 BPM을 측정합니다.
-        avgBPM = MeasureHeartBeatWhileVideo(lcd, videoPath);
+        avgBPM = MeasureHeartBeatWhileVideo(lcd, videoPath, initialBPM);
 
         if (avgBPM < 0)
         {
